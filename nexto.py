@@ -6,11 +6,11 @@ from rlbot.utils.structures.game_data_struct import GameTickPacket
 from rlbot.utils.structures.quick_chats import QuickChats
 from rlgym_compat import GameState
 
-from .agent import Agent
-from .nexto_obs import NextoObsBuilder, BOOST_LOCATIONS
-from .bot_enums import BotMode
-from .demo_controller import DemoController
-from .kickoff_controller import KickoffController
+from agent import Agent
+from nexto_obs import NextoObsBuilder, BOOST_LOCATIONS
+from bot_enums import BotMode
+from demo_controller import DemoController
+from kickoff_controller import KickoffController
 
 
 class Nexto(BaseAgent):

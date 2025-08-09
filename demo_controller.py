@@ -2,9 +2,9 @@
 
 import math
 import numpy as np
-from .vector_utils import Vec3
-from .bot_enums import DemolishPhase
-from .physics_utils import MotionPredictor, InterceptPlanner
+from vector_utils import Vec3
+from bot_enums import DemolishPhase
+from physics_utils import MotionPredictor, InterceptPlanner
 
 
 class DemoController:

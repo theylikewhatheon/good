@@ -1,7 +1,7 @@
 """Physics calculations and prediction for the Nexto bot."""
 
 import math
-from .vector_utils import Vec3
+from vector_utils import Vec3
 
 
 class PhysicsConstants:
