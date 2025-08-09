@@ -80,11 +80,21 @@ class Learner(object):
         assert (
                 env_create_function is not None
         ), "MUST PROVIDE A FUNCTION TO CREATE RLGYM FUNCTIONS TO INITIALIZE RLGYM-PPO"
+        
+        # Self-questioning: Validate configuration and warn about potential issues
+        self._validate_configuration_and_warn(
+            n_proc, min_inference_size, exp_buffer_size, ts_per_iteration,
+            ppo_batch_size, ppo_minibatch_size, ppo_epochs, policy_lr, critic_lr,
+            save_every_ts, timestep_limit, device
+        )
 
         if checkpoints_save_folder is None:
             checkpoints_save_folder = os.path.join(
                 "data", "checkpoints", "rlgym-ppo-run"
             )
+            
+        # Self-questioning: Check if save folder already exists and prompt user
+        self._check_save_folder_and_prompt(checkpoints_save_folder, add_unix_timestamp)
 
         # Add the option for the user to turn off the addition of Unix Timestamps to
         # the ``checkpoints_save_folder`` path
@@ -245,7 +255,12 @@ class Learner(object):
 
         # Class to watch for keyboard hits
         kb = KBHit()
-        print("Press (p) to pause (c) to checkpoint, (q) to checkpoint and quit (after next iteration)\n")
+        print("Press (p) to pause (c) to checkpoint, (q) to checkpoint and quit (after next iteration)")
+        print("🤔 I'll be asking myself questions during training to help catch issues early!\n")
+
+        # Self-questioning: Track performance metrics to detect issues
+        performance_history = []
+        last_performance_check = 0
 
         # While the number of timesteps we have collected so far is less than the
         # amount we are allowed to collect.
@@ -287,6 +302,40 @@ class Learner(object):
             self.ts_since_last_save += steps_collected
             if self.agent.average_reward is not None:
                 report["Policy Reward"] = self.agent.average_reward
+                
+                # Self-questioning: Monitor performance and detect issues
+                performance_history.append(self.agent.average_reward)
+                if len(performance_history) > 50:  # Keep last 50 episodes
+                    performance_history.pop(0)
+                    
+                # Check for performance issues every 10 epochs
+                if self.epoch > 0 and self.epoch % 10 == 0 and len(performance_history) >= 20:
+                    recent_avg = np.mean(performance_history[-10:])
+                    older_avg = np.mean(performance_history[-20:-10])
+                    
+                    if recent_avg < older_avg * 0.8:  # 20% performance drop
+                        print(f"🤔 Performance seems to be declining...")
+                        print(f"   Recent average reward: {recent_avg:.3f}")
+                        print(f"   Previous average reward: {older_avg:.3f}")
+                        print("   Questions to consider:")
+                        print("   - Is the learning rate too high causing instability?")
+                        print("   - Has the environment or reward function changed?")
+                        print("   - Are we overfitting to early episodes?")
+                        
+                    elif recent_avg > older_avg * 1.5:  # Significant improvement
+                        print(f"🚀 Great progress detected!")
+                        print(f"   Recent average reward: {recent_avg:.3f} (vs {older_avg:.3f})")
+                        
+                    # Check for stagnation
+                    if len(performance_history) >= 50:
+                        std_recent = np.std(performance_history[-25:])
+                        if std_recent < 0.01 and abs(recent_avg) > 0.1:  # Very stable but not near zero
+                            print(f"🤔 Performance seems to have plateaued...")
+                            print(f"   Reward has been stable around {recent_avg:.3f} for a while")
+                            print("   Questions to consider:")
+                            print("   - Should we adjust exploration (entropy coefficient)?")
+                            print("   - Is the current policy near optimal for this task?")
+                            print("   - Should we change the learning rate or other hyperparameters?")
             else:
                 report["Policy Reward"] = np.nan
 
@@ -396,6 +445,26 @@ class Learner(object):
         folder_path = os.path.join(
             self.checkpoints_save_folder, str(cumulative_timesteps)
         )
+        
+        # Self-questioning: Check if we're about to save over existing data
+        if os.path.exists(folder_path):
+            print(f"🤔 I found an existing checkpoint at {folder_path}")
+            print("❓ Should I overwrite it? (y/N): ", end="")
+            try:
+                import sys
+                # Check if we're in an interactive environment
+                if sys.stdin.isatty():
+                    response = input().strip().lower()
+                    if response != 'y':
+                        print("✅ Skipping save to prevent overwrite.")
+                        return
+                    print("⚠️  Overwriting existing checkpoint...")
+                else:
+                    print("Non-interactive mode: overwriting existing checkpoint...")
+            except (KeyboardInterrupt, EOFError):
+                print("✅ Save cancelled by user.")
+                return
+        
         os.makedirs(folder_path, exist_ok=True)
 
         # Check to see if we've run out of checkpoint space and remove the oldest
@@ -403,15 +472,19 @@ class Learner(object):
         print(f"Saving checkpoint {cumulative_timesteps}...")
         existing_checkpoints = [
             int(arg) for arg in os.listdir(self.checkpoints_save_folder)
+            if arg.isdigit()  # Self-questioning: Only consider numeric folders as checkpoints
         ]
         if len(existing_checkpoints) > self.n_checkpoints_to_keep:
             existing_checkpoints.sort()
-            for checkpoint_name in existing_checkpoints[: -self.n_checkpoints_to_keep]:
-                shutil.rmtree(
-                    os.path.join(self.checkpoints_save_folder, str(checkpoint_name))
-                )
-
-        os.makedirs(folder_path, exist_ok=True)
+            checkpoints_to_remove = existing_checkpoints[: -self.n_checkpoints_to_keep]
+            
+            # Self-questioning: Inform user about what we're deleting
+            if len(checkpoints_to_remove) > 0:
+                print(f"🗑️  Removing {len(checkpoints_to_remove)} old checkpoints to stay within limit of {self.n_checkpoints_to_keep}")
+                for checkpoint_name in checkpoints_to_remove:
+                    checkpoint_path = os.path.join(self.checkpoints_save_folder, str(checkpoint_name))
+                    print(f"   Removing: {checkpoint_path}")
+                    shutil.rmtree(checkpoint_path)
 
         # Save all the things that need saving.
         self.ppo_learner.save_to(folder_path)
@@ -456,7 +529,7 @@ class Learner(object):
         if folder_path == "latest":
             save_folder = self.checkpoints_save_folder
             if save_folder is None:
-                # No save folder to load from
+                print("❌ No save folder configured for loading latest checkpoint.")
                 return
 
             if self.add_unix_timestamp:
@@ -465,9 +538,10 @@ class Learner(object):
                 save_path = os.path.dirname(base_save_folder)
 
                 if not os.path.exists(save_path):
-                    # Save path does not exist
+                    print(f"❌ Save path does not exist: {save_path}")
                     return
 
+                print(f"🔍 Looking for latest checkpoint in {save_path}...")
                 # Find folder with our base save path with the highest timestamp
                 highest_timestamp = -1
                 best_folder = None
@@ -488,40 +562,69 @@ class Learner(object):
 
                 if not (best_folder is None):
                     load_base_path = best_folder
+                    print(f"📁 Found timestamped folder: {best_folder}")
                 else:
-                    # Failed to find any unix timestamp folders under the right name
+                    print("❌ Failed to find any unix timestamp folders under the right name")
                     return
             else:
                 if os.path.exists(self.checkpoints_save_folder):
                     load_base_path = self.checkpoints_save_folder
+                    print(f"📁 Using checkpoint folder: {load_base_path}")
                 else:
-                    # Save path doesnt exist
+                    print(f"❌ Save path doesn't exist: {self.checkpoints_save_folder}")
                     return
 
             # Find folder with the highest timesteps to load
             highest_ts = -1
+            available_checkpoints = []
             for filename in os.listdir(load_base_path):
                 if not os.path.isdir(os.path.join(load_base_path, filename)):
                     continue
 
                 if not filename.isdigit():
                     continue
-
-                highest_ts = max(highest_ts, int(filename))
+                
+                ts = int(filename)
+                available_checkpoints.append(ts)
+                highest_ts = max(highest_ts, ts)
 
             if highest_ts != -1:
                 folder_path = os.path.join(load_base_path, str(highest_ts))
-                print(f"Auto-load path: {folder_path}")
+                print(f"🎯 Auto-loading latest checkpoint: {folder_path}")
+                if len(available_checkpoints) > 1:
+                    available_checkpoints.sort()
+                    print(f"📊 Available checkpoints: {available_checkpoints}")
             else:
-                # No timestep folders found to load
+                print("❌ No timestep folders found to load")
                 return
 
         # Make sure the folder exists.
-        assert os.path.exists(folder_path), f"UNABLE TO LOCATE FOLDER {folder_path}"
-        print(f"Loading from checkpoint at {folder_path}")
+        if not os.path.exists(folder_path):
+            print(f"❌ Unable to locate checkpoint folder: {folder_path}")
+            print("🤔 Questions to ask yourself:")
+            print("   - Did you specify the correct path?")
+            print("   - Are you sure the checkpoint was saved successfully?")
+            print("   - Are you trying to load from the right machine/location?")
+            raise FileNotFoundError(f"Checkpoint folder not found: {folder_path}")
+            
+        print(f"📂 Loading from checkpoint at {folder_path}")
+
+        # Self-questioning: Validate checkpoint contents before loading
+        required_files = ["BOOK_KEEPING_VARS.json"]
+        missing_files = [f for f in required_files if not os.path.exists(os.path.join(folder_path, f))]
+        if missing_files:
+            print(f"❌ Checkpoint appears incomplete. Missing files: {missing_files}")
+            print("🤔 This checkpoint might be corrupted or from an incompatible version.")
+            raise FileNotFoundError(f"Incomplete checkpoint: missing {missing_files}")
 
         # Load stuff.
-        self.ppo_learner.load_from(folder_path)
+        try:
+            self.ppo_learner.load_from(folder_path)
+            print("✅ PPO learner loaded successfully")
+        except Exception as e:
+            print(f"❌ Failed to load PPO learner: {e}")
+            print("🤔 This might be a version compatibility issue or corrupted model files.")
+            raise
 
         wandb_loaded = False
         with open(os.path.join(folder_path, "BOOK_KEEPING_VARS.json"), "r") as f:
@@ -574,3 +677,123 @@ class Learner(object):
         if type(self.agent) == BatchedAgentManager:
             self.agent.cleanup()
         self.experience_buffer.clear()
+        
+    def _validate_configuration_and_warn(self, n_proc, min_inference_size, exp_buffer_size, 
+                                        ts_per_iteration, ppo_batch_size, ppo_minibatch_size,
+                                        ppo_epochs, policy_lr, critic_lr, save_every_ts, 
+                                        timestep_limit, device):
+        """
+        Self-questioning: Validate configuration parameters and warn about potential issues.
+        This reduces the need for manual debugging by catching common problems early.
+        """
+        print("🤔 Asking myself some questions about your configuration...")
+        
+        # Question 1: Are batch sizes reasonable?
+        if ppo_minibatch_size is None:
+            ppo_minibatch_size = ppo_batch_size
+            
+        if ppo_batch_size < ts_per_iteration * 0.5:
+            print(f"⚠️  Warning: Your PPO batch size ({ppo_batch_size}) is less than half your timesteps per iteration ({ts_per_iteration}).")
+            print("   This might lead to inefficient learning. Consider increasing ppo_batch_size or decreasing ts_per_iteration.")
+            
+        if ppo_minibatch_size > ppo_batch_size:
+            print(f"❌ Error: PPO minibatch size ({ppo_minibatch_size}) cannot be larger than batch size ({ppo_batch_size}).")
+            raise ValueError("ppo_minibatch_size must be <= ppo_batch_size")
+            
+        # Question 2: Is the experience buffer appropriately sized?
+        if exp_buffer_size < ts_per_iteration * 2:
+            print(f"⚠️  Warning: Experience buffer size ({exp_buffer_size}) is less than 2x timesteps per iteration ({ts_per_iteration}).")
+            print("   This might cause training instability. Consider increasing exp_buffer_size.")
+            
+        # Question 3: Are learning rates in a reasonable range?
+        if policy_lr > 1e-2:
+            print(f"⚠️  Warning: Policy learning rate ({policy_lr}) seems high. This might cause training instability.")
+        if critic_lr > 1e-2:
+            print(f"⚠️  Warning: Critic learning rate ({critic_lr}) seems high. This might cause training instability.")
+            
+        if policy_lr < 1e-6:
+            print(f"⚠️  Warning: Policy learning rate ({policy_lr}) seems very low. Training might be extremely slow.")
+        if critic_lr < 1e-6:
+            print(f"⚠️  Warning: Critic learning rate ({critic_lr}) seems very low. Training might be extremely slow.")
+            
+        # Question 4: Is the process count reasonable?
+        try:
+            import multiprocessing
+            available_cores = multiprocessing.cpu_count()
+            if n_proc > available_cores:
+                print(f"⚠️  Warning: You're requesting {n_proc} processes but only have {available_cores} CPU cores.")
+                print("   This might actually slow down training due to context switching overhead.")
+        except:
+            pass
+            
+        # Question 5: Are we using GPU efficiently?
+        if device in {"auto", "gpu"}:
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
+                    print(f"✅ Found GPU with {gpu_memory:.1f}GB memory")
+                    
+                    # Estimate memory usage
+                    estimated_memory = (ppo_batch_size * 50 * 4) / 1e9  # rough estimate
+                    if estimated_memory > gpu_memory * 0.8:
+                        print(f"⚠️  Warning: Estimated memory usage ({estimated_memory:.1f}GB) might exceed GPU memory.")
+                        print("   Consider reducing batch sizes if you encounter out-of-memory errors.")
+                else:
+                    print("⚠️  Warning: GPU requested but not available. Falling back to CPU.")
+            except ImportError:
+                print("⚠️  Warning: PyTorch not available. Cannot use GPU acceleration.")
+                
+        # Question 6: Are save intervals reasonable?
+        expected_runtime_hours = timestep_limit / (ts_per_iteration * 3600)  # rough estimate
+        save_interval_hours = save_every_ts / (ts_per_iteration * 3600)
+        
+        if save_interval_hours > 2 and expected_runtime_hours > 4:
+            print(f"⚠️  Warning: You're saving every {save_interval_hours:.1f} hours with an expected runtime of {expected_runtime_hours:.1f} hours.")
+            print("   Consider saving more frequently to avoid losing progress.")
+            
+        # Question 7: Is min_inference_size appropriate?
+        if min_inference_size > n_proc * 0.9:
+            print(f"⚠️  Warning: min_inference_size ({min_inference_size}) is very close to n_proc ({n_proc}).")
+            print("   This might cause inefficient batching. Consider reducing min_inference_size.")
+            
+        print("✅ Configuration validation complete!\n")
+        
+    def _check_save_folder_and_prompt(self, checkpoints_save_folder, add_unix_timestamp):
+        """
+        Self-questioning: Check if we might overwrite existing data and prompt user if needed.
+        """
+        if not add_unix_timestamp and os.path.exists(checkpoints_save_folder):
+            existing_checkpoints = []
+            try:
+                existing_checkpoints = [f for f in os.listdir(checkpoints_save_folder) 
+                                      if os.path.isdir(os.path.join(checkpoints_save_folder, f))]
+            except:
+                pass
+                
+            if existing_checkpoints:
+                print(f"🤔 I found existing checkpoints in {checkpoints_save_folder}:")
+                for cp in existing_checkpoints[:5]:  # Show first 5
+                    print(f"   - {cp}")
+                if len(existing_checkpoints) > 5:
+                    print(f"   ... and {len(existing_checkpoints) - 5} more")
+                    
+                print("\n❓ Should I continue? This might overwrite existing checkpoints.")
+                print("   Options:")
+                print("   - Press Enter to continue with unix timestamp (recommended)")
+                print("   - Type 'y' to continue without timestamp (might overwrite)")
+                print("   - Type 'n' to abort")
+                
+                try:
+                    response = input("Your choice: ").strip().lower()
+                    if response == 'n':
+                        print("❌ Aborting to prevent data loss.")
+                        raise KeyboardInterrupt("User chose to abort to prevent data loss")
+                    elif response == 'y':
+                        print("⚠️  Continuing without timestamp. Existing checkpoints may be overwritten.")
+                    else:
+                        print("✅ Adding unix timestamp to prevent conflicts.")
+                        self.add_unix_timestamp = True
+                except (KeyboardInterrupt, EOFError):
+                    print("❌ Aborting to prevent data loss.")
+                    raise KeyboardInterrupt("User chose to abort to prevent data loss")
