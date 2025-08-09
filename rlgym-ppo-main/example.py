@@ -76,6 +76,9 @@ if __name__ == "__main__":
     # educated guess - could be slightly higher or lower
     min_inference_size = max(1, int(round(n_proc * 0.9)))
 
+    print("🤔 Setting up RLGym-PPO with self-questioning enabled...")
+    print("The learner will now ask itself questions to help catch issues early!")
+    
     learner = Learner(build_rocketsim_env,
                       n_proc=n_proc,
                       min_inference_size=min_inference_size,
@@ -91,4 +94,7 @@ if __name__ == "__main__":
                       save_every_ts=100_000,
                       timestep_limit=1_000_000_000,
                       log_to_wandb=True)
+    
+    print("\n🚀 Starting training with self-questioning monitoring...")
+    print("Watch for helpful questions and suggestions during training!")
     learner.learn()
